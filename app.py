@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -10,6 +11,24 @@ import streamlit as st
 
 ARCHIVO_BIBLIOTECA = "biblioteca.csv"
 IMAGEN_LIBRO_ENCONTRADO = "libro_encontrado.jpeg"
+
+IMAGENES_CABECERA = [
+    "banner_1.jpeg",
+    "banner_1.jpg",
+    "banner_1.png",
+    "banner_2.jpeg",
+    "banner_2.jpg",
+    "banner_2.png",
+    "banner_3.jpeg",
+    "banner_3.jpg",
+    "banner_3.png",
+    "banner_4.jpeg",
+    "banner_4.jpg",
+    "banner_4.png",
+    "banner_5.jpeg",
+    "banner_5.jpg",
+    "banner_5.png",
+]
 
 COLUMNAS_BIBLIOTECA = [
     "isbn",
@@ -29,6 +48,7 @@ COLUMNAS_BIBLIOTECA = [
     "fecha_alta",
 ]
 
+
 st.set_page_config(
     page_title="Biblioteca Enrique",
     page_icon="📚",
@@ -36,38 +56,260 @@ st.set_page_config(
 )
 
 
-st.title("📚 Biblioteca Enrique")
-st.write("App para registrar libros mediante código de barras o ISBN.")
+def obtener_password_app():
+    try:
+        return st.secrets.get("APP_PASSWORD", "")
+    except Exception:
+        return os.environ.get("APP_PASSWORD", "")
+
+
+def comprobar_acceso():
+    if st.session_state.get("acceso_autorizado", False):
+        return True
+
+    password_correcta = obtener_password_app()
+
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(200, 162, 74, 0.18), transparent 30%),
+                linear-gradient(135deg, #f8f1e6 0%, #efe1cd 100%);
+        }
+
+        .block-container {
+            max-width: 620px;
+            padding-top: 6rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.title("📚 La biblioteca de Enrique")
+    st.subheader("Acceso privado")
+    st.write("Introduce la contraseña para acceder a la biblioteca.")
+
+    password_introducida = st.text_input(
+        "Contraseña",
+        type="password",
+        placeholder="Escribe la contraseña...",
+        key="password_acceso"
+    )
+
+    if st.button("Entrar"):
+        if not password_correcta:
+            st.error("La contraseña de la app todavía no está configurada.")
+        elif password_introducida == password_correcta:
+            st.session_state["acceso_autorizado"] = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+
+    return False
+
+
+if not comprobar_acceso():
+    st.stop()
+
+
+imagenes_cabecera_disponibles = [
+    imagen for imagen in IMAGENES_CABECERA
+    if os.path.exists(imagen)
+]
+
+col_titulo, col_espacio_cabecera, col_foto_cabecera = st.columns([1.75, 1.05, 0.9])
+
+with col_titulo:
+    st.title("📚 La biblioteca de Enrique")
+    st.write("App para registrar libros mediante código de barras o ISBN.")
+
+with col_foto_cabecera:
+    if imagenes_cabecera_disponibles:
+        imagen_cabecera = random.choice(imagenes_cabecera_disponibles)
+        st.image(imagen_cabecera, use_container_width=True)
 
 st.markdown(
     """
     <style>
+    :root {
+        --fondo-papel: #f4efe6;
+        --tarjeta: #fffaf0;
+        --tarjeta-oscura: #efe2cc;
+        --texto-principal: #2f2a24;
+        --texto-secundario: #6f6256;
+        --madera: #8b5e34;
+        --madera-oscura: #5f3b1f;
+        --verde-biblioteca: #2f5d50;
+        --verde-biblioteca-claro: #3f7667;
+        --dorado: #c8a24a;
+        --borde-suave: rgba(95, 59, 31, 0.18);
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at top left, rgba(200, 162, 74, 0.18), transparent 30%),
+            linear-gradient(135deg, #f8f1e6 0%, #efe1cd 100%);
+        color: var(--texto-principal);
+    }
+
+    .block-container {
+        padding-top: 4.75rem;
+        padding-bottom: 3rem;
+        max-width: 1280px;
+    }
+
+    h1, h2, h3 {
+        color: var(--madera-oscura) !important;
+        letter-spacing: -0.02em;
+    }
+
+    p, label, span, div {
+        color: var(--texto-principal);
+    }
+
+    [data-testid="stHeader"] {
+        background: rgba(244, 239, 230, 0.85);
+        backdrop-filter: blur(8px);
+    }
+
+    [data-testid="stMetric"] {
+        background: rgba(255, 250, 240, 0.88);
+        border: 1px solid var(--borde-suave);
+        border-radius: 18px;
+        padding: 1rem;
+        box-shadow: 0 10px 24px rgba(95, 59, 31, 0.08);
+    }
+
+    [data-testid="stMetric"] label,
+    [data-testid="stMetric"] div {
+        color: var(--texto-principal) !important;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(255, 250, 240, 0.78);
+        border: 1px solid var(--borde-suave) !important;
+        border-radius: 18px !important;
+        box-shadow: 0 12px 28px rgba(95, 59, 31, 0.08);
+    }
+
     div[role="radiogroup"] {
         display: flex;
-        gap: 0.35rem;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.35);
-        padding-bottom: 0.15rem;
-        margin-bottom: 1rem;
+        flex-wrap: nowrap;
+        gap: 0.45rem;
+        border-bottom: 2px solid rgba(139, 94, 52, 0.28);
+        padding-bottom: 0;
+        margin-top: -3.25rem;
+        margin-bottom: 2.8rem;
+        max-width: 940px;
+        white-space: nowrap;
     }
 
     div[role="radiogroup"] label {
-        border: 1px solid rgba(128, 128, 128, 0.25);
+        border: 1px solid rgba(139, 94, 52, 0.24);
         border-bottom: none;
-        border-radius: 0.65rem 0.65rem 0 0;
-        padding: 0.45rem 0.95rem;
-        background: rgba(128, 128, 128, 0.08);
-        min-height: 2.4rem;
+        border-radius: 0.85rem 0.85rem 0 0;
+        padding: 0.55rem 0.95rem;
+        background: rgba(255, 250, 240, 0.62);
+        min-height: 2.5rem;
+        box-shadow: 0 -2px 0 rgba(139, 94, 52, 0.05) inset;
+        flex-shrink: 0;
+    }
+
+    div[role="radiogroup"] label:hover {
+        background: rgba(255, 250, 240, 0.92);
+        border-color: rgba(139, 94, 52, 0.42);
     }
 
     div[role="radiogroup"] label:has(input:checked) {
-        background: rgba(0, 229, 255, 0.16);
-        border-color: rgba(0, 229, 255, 0.65);
-        box-shadow: 0 -2px 12px rgba(0, 229, 255, 0.18) inset;
-        font-weight: 700;
+        background: linear-gradient(180deg, #fffaf0 0%, #f0dfc3 100%);
+        border-color: rgba(95, 59, 31, 0.55);
+        box-shadow: 0 -3px 0 var(--dorado) inset, 0 0 18px rgba(200, 162, 74, 0.18);
+        font-weight: 800;
     }
 
     div[role="radiogroup"] input {
         display: none;
+    }
+
+    .stButton > button,
+    .stDownloadButton > button {
+        background: linear-gradient(180deg, var(--verde-biblioteca-claro), var(--verde-biblioteca));
+        color: #fffaf0 !important;
+        border: 1px solid rgba(47, 93, 80, 0.75);
+        border-radius: 12px;
+        font-weight: 700;
+        box-shadow: 0 8px 18px rgba(47, 93, 80, 0.16);
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        background: linear-gradient(180deg, #477f70, #244a40);
+        border-color: var(--dorado);
+        color: white !important;
+    }
+
+    input, textarea, select {
+        background-color: #fffdf7 !important;
+        border-color: rgba(139, 94, 52, 0.25) !important;
+        color: var(--texto-principal) !important;
+        border-radius: 10px !important;
+    }
+
+    div[data-baseweb="select"] > div {
+        background-color: #1f2129 !important;
+        border-color: rgba(139, 94, 52, 0.35) !important;
+        color: #fffaf0 !important;
+        border-radius: 10px !important;
+    }
+
+    div[data-baseweb="select"] span,
+    div[data-baseweb="select"] div {
+        color: #fffaf0 !important;
+    }
+
+    div[data-baseweb="popover"] ul,
+    div[data-baseweb="popover"] li,
+    div[data-baseweb="menu"] ul,
+    div[data-baseweb="menu"] li {
+        background-color: #1f2129 !important;
+        color: #fffaf0 !important;
+    }
+
+    div[data-baseweb="popover"] li:hover,
+    div[data-baseweb="menu"] li:hover {
+        background-color: #2f5d50 !important;
+        color: #fffaf0 !important;
+    }
+
+    [data-testid="stDataFrame"] {
+        border: 1px solid var(--borde-suave);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 12px 26px rgba(95, 59, 31, 0.08);
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 14px;
+        border: 1px solid rgba(139, 94, 52, 0.14);
+    }
+
+    [data-testid="stImage"] img {
+        border-radius: 14px;
+        border: 10px solid #fff8e8;
+        outline: 3px solid rgba(95, 59, 31, 0.45);
+        box-shadow:
+            0 3px 0 rgba(200, 162, 74, 0.55),
+            0 16px 34px rgba(95, 59, 31, 0.22);
+        max-height: 240px;
+        object-fit: contain;
+        background: rgba(255, 250, 240, 0.75);
+        margin-left: auto;
+    }
+
+    hr {
+        border-color: rgba(139, 94, 52, 0.25) !important;
     }
     </style>
     """,
@@ -564,7 +806,7 @@ def mostrar_tab_añadir(biblioteca):
 
 
 def mostrar_tab_biblioteca(biblioteca):
-    st.header("📚 Biblioteca")
+    st.header("📚 La biblioteca de Enrique")
 
     if biblioteca.empty:
         st.info("Todavía no hay libros guardados.")
