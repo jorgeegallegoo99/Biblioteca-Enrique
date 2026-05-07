@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import re
@@ -11,6 +12,11 @@ import requests
 import streamlit as st
 
 ARCHIVO_BIBLIOTECA = "biblioteca.csv"
+GOOGLE_SHEET_NAME_DEFAULT = "libros"
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 IMAGEN_LIBRO_ENCONTRADO = "libro_encontrado.jpeg"
 
 IMAGENES_CABECERA = [
@@ -418,21 +424,145 @@ def es_isbn_valido(isbn):
 
     return es_isbn10_valido(isbn) or es_isbn13_valido(isbn)
 
-def cargar_biblioteca():
+def obtener_secret(nombre, valor_por_defecto=""):
+    try:
+        return st.secrets.get(nombre, valor_por_defecto)
+    except Exception:
+        return os.environ.get(nombre, valor_por_defecto)
+
+
+def obtener_config_google_sheets():
+    sheet_id = obtener_secret("GOOGLE_SHEET_ID", "")
+    sheet_name = obtener_secret("GOOGLE_SHEET_NAME", GOOGLE_SHEET_NAME_DEFAULT)
+
+    credenciales = None
+
+    try:
+        if "gcp_service_account" in st.secrets:
+            credenciales = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        credenciales = None
+
+    if not credenciales:
+        credenciales_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON", "")
+        if credenciales_json:
+            try:
+                credenciales = json.loads(credenciales_json)
+            except Exception:
+                credenciales = None
+
+    return sheet_id, sheet_name, credenciales
+
+
+def google_sheets_configurado():
+    sheet_id, sheet_name, credenciales = obtener_config_google_sheets()
+    return bool(sheet_id and sheet_name and credenciales)
+
+
+def obtener_worksheet_google_sheets():
+    sheet_id, sheet_name, credenciales = obtener_config_google_sheets()
+
+    if not sheet_id or not credenciales:
+        return None
+
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except Exception as error:
+        st.error(f"Faltan librerías para conectar con Google Sheets: {error}")
+        return None
+
+    try:
+        credentials = Credentials.from_service_account_info(
+            credenciales,
+            scopes=GOOGLE_SCOPES
+        )
+        cliente = gspread.authorize(credentials)
+        spreadsheet = cliente.open_by_key(sheet_id)
+        return spreadsheet.worksheet(sheet_name)
+    except Exception as error:
+        st.error(f"No se ha podido conectar con Google Sheets: {error}")
+        return None
+
+
+def preparar_dataframe_biblioteca(df):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=COLUMNAS_BIBLIOTECA)
+
+    df = df.astype(str).fillna("")
+
+    for columna in COLUMNAS_BIBLIOTECA:
+        if columna not in df.columns:
+            df[columna] = ""
+
+    return df[COLUMNAS_BIBLIOTECA]
+
+
+def cargar_biblioteca_desde_csv():
     if os.path.exists(ARCHIVO_BIBLIOTECA):
         df = pd.read_csv(ARCHIVO_BIBLIOTECA, dtype=str).fillna("")
-
-        for columna in COLUMNAS_BIBLIOTECA:
-            if columna not in df.columns:
-                df[columna] = ""
-
-        return df[COLUMNAS_BIBLIOTECA]
+        return preparar_dataframe_biblioteca(df)
 
     return pd.DataFrame(columns=COLUMNAS_BIBLIOTECA)
 
 
-def guardar_biblioteca(df):
+def cargar_biblioteca_desde_google_sheets():
+    worksheet = obtener_worksheet_google_sheets()
+
+    if worksheet is None:
+        return cargar_biblioteca_desde_csv()
+
+    try:
+        valores = worksheet.get_all_values()
+
+        if not valores:
+            worksheet.update([COLUMNAS_BIBLIOTECA])
+            return pd.DataFrame(columns=COLUMNAS_BIBLIOTECA)
+
+        cabeceras = valores[0]
+        filas = valores[1:]
+        df = pd.DataFrame(filas, columns=cabeceras)
+        return preparar_dataframe_biblioteca(df)
+
+    except Exception as error:
+        st.error(f"No se ha podido leer la biblioteca desde Google Sheets: {error}")
+        return cargar_biblioteca_desde_csv()
+
+
+def cargar_biblioteca():
+    if google_sheets_configurado():
+        return cargar_biblioteca_desde_google_sheets()
+
+    return cargar_biblioteca_desde_csv()
+
+
+def guardar_biblioteca_en_csv(df):
+    df = preparar_dataframe_biblioteca(df)
     df.to_csv(ARCHIVO_BIBLIOTECA, index=False)
+
+
+def guardar_biblioteca_en_google_sheets(df):
+    worksheet = obtener_worksheet_google_sheets()
+
+    if worksheet is None:
+        guardar_biblioteca_en_csv(df)
+        return
+
+    try:
+        df = preparar_dataframe_biblioteca(df)
+        filas = df.astype(str).values.tolist()
+        valores = [COLUMNAS_BIBLIOTECA] + filas
+        worksheet.clear()
+        worksheet.update(valores, value_input_option="USER_ENTERED")
+    except Exception as error:
+        st.error(f"No se ha podido guardar la biblioteca en Google Sheets: {error}")
+
+
+def guardar_biblioteca(df):
+    if google_sheets_configurado():
+        guardar_biblioteca_en_google_sheets(df)
+    else:
+        guardar_biblioteca_en_csv(df)
 
 
 def obtener_nombre_autor_open_library(author_key, timeout=3):
@@ -1588,7 +1718,10 @@ def mostrar_tab_copia(biblioteca):
         st.info("Todavía no hay libros guardados para exportar.")
         return
 
-    st.write("Descarga una copia de la biblioteca para guardarla fuera de la app.")
+    if google_sheets_configurado():
+        st.write("La biblioteca principal se guarda en Google Sheets. Puedes descargar una copia CSV adicional como respaldo.")
+    else:
+        st.write("Descarga una copia de la biblioteca para guardarla fuera de la app.")
 
     st.download_button(
         label="⬇️ Descargar biblioteca en CSV",
@@ -1597,7 +1730,7 @@ def mostrar_tab_copia(biblioteca):
         mime="text/csv"
     )
 
-    st.caption("El archivo CSV puede abrirse con Excel, Numbers o Google Sheets.")
+    st.caption("El archivo CSV puede abrirse con Excel, Numbers o Google Sheets. La base principal de la app será Google Sheets cuando los Secrets estén configurados.")
 
 
 # =========================
