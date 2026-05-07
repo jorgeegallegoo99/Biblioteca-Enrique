@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -91,14 +92,17 @@ def comprobar_acceso():
     st.subheader("Acceso privado")
     st.write("Introduce la contraseña para acceder a la biblioteca.")
 
-    password_introducida = st.text_input(
-        "Contraseña",
-        type="password",
-        placeholder="Escribe la contraseña...",
-        key="password_acceso"
-    )
+    with st.form("formulario_acceso"):
+        password_introducida = st.text_input(
+            "Contraseña",
+            type="password",
+            placeholder="Escribe la contraseña...",
+            key="password_acceso"
+        )
 
-    if st.button("Entrar"):
+        enviar_password = st.form_submit_button("Entrar")
+
+    if enviar_password:
         if not password_correcta:
             st.error("La contraseña de la app todavía no está configurada.")
         elif password_introducida == password_correcta:
@@ -128,7 +132,7 @@ with col_titulo:
 with col_foto_cabecera:
     if imagenes_cabecera_disponibles:
         imagen_cabecera = random.choice(imagenes_cabecera_disponibles)
-        st.image(imagen_cabecera, use_container_width=True)
+        st.image(imagen_cabecera, width="stretch")
 
 st.markdown(
     """
@@ -269,6 +273,22 @@ st.markdown(
         color: #fffaf0 !important;
     }
 
+    div[data-baseweb="select"] input {
+        color: #fffaf0 !important;
+        -webkit-text-fill-color: #fffaf0 !important;
+    }
+
+    div[data-baseweb="select"] svg {
+        fill: #fffaf0 !important;
+        color: #fffaf0 !important;
+    }
+
+    div[data-baseweb="select"] [class*="singleValue"],
+    div[data-baseweb="select"] [class*="placeholder"],
+    div[data-baseweb="select"] [class*="valueContainer"] {
+        color: #fffaf0 !important;
+    }
+
     div[data-baseweb="popover"] ul,
     div[data-baseweb="popover"] li,
     div[data-baseweb="menu"] ul,
@@ -295,6 +315,22 @@ st.markdown(
         border: 1px solid rgba(139, 94, 52, 0.14);
     }
 
+    [data-testid="stElementToolbar"],
+    [data-testid="StyledFullScreenButton"],
+    [data-testid="stElementToolbarButton"],
+    button[title="View fullscreen"],
+    button[title="Fullscreen"],
+    details[title="Click to view actions"],
+    .vega-embed summary,
+    .vega-embed .vega-actions,
+    .vega-actions,
+    .vega-actions a {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
     [data-testid="stImage"] img {
         border-radius: 14px;
         border: 10px solid #fff8e8;
@@ -317,11 +353,70 @@ st.markdown(
 )
 
 
+
 def limpiar_isbn(isbn):
     isbn_limpio = isbn.strip().upper()
     isbn_limpio = re.sub(r"[^0-9X]", "", isbn_limpio)
     return isbn_limpio
 
+
+def es_isbn10_valido(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    if len(isbn) != 10:
+        return False
+
+    total = 0
+
+    for posicion, caracter in enumerate(isbn):
+        if caracter == "X" and posicion == 9:
+            valor = 10
+        elif caracter.isdigit():
+            valor = int(caracter)
+        else:
+            return False
+
+        total += (10 - posicion) * valor
+
+    return total % 11 == 0
+
+
+def es_isbn13_valido(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    if len(isbn) != 13 or not isbn.isdigit():
+        return False
+
+    total = 0
+
+    for posicion, caracter in enumerate(isbn):
+        multiplicador = 1 if posicion % 2 == 0 else 3
+        total += int(caracter) * multiplicador
+
+    return total % 10 == 0
+
+
+def es_codigo_basura(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    if not isbn:
+        return True
+
+    solo_digitos = isbn.replace("X", "")
+
+    if solo_digitos and len(set(solo_digitos)) == 1:
+        return True
+
+    return False
+
+
+def es_isbn_valido(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    if es_codigo_basura(isbn):
+        return False
+
+    return es_isbn10_valido(isbn) or es_isbn13_valido(isbn)
 
 def cargar_biblioteca():
     if os.path.exists(ARCHIVO_BIBLIOTECA):
@@ -340,10 +435,10 @@ def guardar_biblioteca(df):
     df.to_csv(ARCHIVO_BIBLIOTECA, index=False)
 
 
-def obtener_nombre_autor_open_library(author_key):
+def obtener_nombre_autor_open_library(author_key, timeout=3):
     try:
         url = f"https://openlibrary.org{author_key}.json"
-        respuesta = requests.get(url, timeout=10)
+        respuesta = requests.get(url, timeout=timeout)
 
         if respuesta.status_code != 200:
             return "Autor desconocido"
@@ -355,10 +450,14 @@ def obtener_nombre_autor_open_library(author_key):
         return "Autor desconocido"
 
 
-def buscar_en_google_books(isbn):
+def buscar_en_google_books(isbn, timeout=10, busqueda_flexible=False):
     try:
-        url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
-        respuesta = requests.get(url, timeout=10)
+        if busqueda_flexible:
+            url = f"https://www.googleapis.com/books/v1/volumes?q={isbn}"
+        else:
+            url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+
+        respuesta = requests.get(url, timeout=timeout)
 
         if respuesta.status_code != 200:
             return None
@@ -386,10 +485,10 @@ def buscar_en_google_books(isbn):
         return None
 
 
-def buscar_en_open_library(isbn):
+def buscar_en_open_library(isbn, timeout=10):
     try:
         url = f"https://openlibrary.org/isbn/{isbn}.json"
-        respuesta = requests.get(url, timeout=10)
+        respuesta = requests.get(url, timeout=timeout)
 
         if respuesta.status_code != 200:
             return None
@@ -400,7 +499,7 @@ def buscar_en_open_library(isbn):
         for autor in info.get("authors", []):
             author_key = autor.get("key")
             if author_key:
-                autores.append(obtener_nombre_autor_open_library(author_key))
+                autores.append(obtener_nombre_autor_open_library(author_key, timeout=3))
 
         autores_texto = ", ".join(autores) if autores else "Autor desconocido"
 
@@ -426,18 +525,234 @@ def buscar_en_open_library(isbn):
         return None
 
 
-def buscar_libro_por_isbn(isbn):
+def convertir_isbn13_a_isbn10(isbn):
     isbn = limpiar_isbn(isbn)
 
-    libro = buscar_en_google_books(isbn)
+    if len(isbn) != 13 or not isbn.startswith("978"):
+        return None
+
+    base = isbn[3:12]
+    total = 0
+
+    for posicion, caracter in enumerate(base):
+        total += (10 - posicion) * int(caracter)
+
+    resto = total % 11
+    digito = 11 - resto
+
+    if digito == 10:
+        digito_control = "X"
+    elif digito == 11:
+        digito_control = "0"
+    else:
+        digito_control = str(digito)
+
+    return base + digito_control
+
+
+def convertir_isbn10_a_isbn13(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    if len(isbn) != 10:
+        return None
+
+    base = "978" + isbn[:9]
+    total = 0
+
+    for posicion, caracter in enumerate(base):
+        multiplicador = 1 if posicion % 2 == 0 else 3
+        total += int(caracter) * multiplicador
+
+    digito_control = (10 - (total % 10)) % 10
+    return base + str(digito_control)
+
+
+def obtener_variantes_isbn(isbn):
+    isbn_limpio = limpiar_isbn(isbn)
+    variantes = [isbn_limpio]
+
+    isbn10 = convertir_isbn13_a_isbn10(isbn_limpio)
+    if isbn10 and isbn10 not in variantes:
+        variantes.append(isbn10)
+
+    isbn13 = convertir_isbn10_a_isbn13(isbn_limpio)
+    if isbn13 and isbn13 not in variantes:
+        variantes.append(isbn13)
+
+    return variantes
+
+
+def buscar_en_open_library_books_api(isbn, timeout=25):
+    try:
+        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data"
+        respuesta = requests.get(url, timeout=timeout)
+
+        if respuesta.status_code != 200:
+            return None
+
+        datos = respuesta.json()
+        clave = f"ISBN:{isbn}"
+
+        if clave not in datos:
+            return None
+
+        info = datos[clave]
+
+        autores = []
+        for autor in info.get("authors", []):
+            nombre = autor.get("name")
+            if nombre:
+                autores.append(nombre)
+
+        autores_texto = ", ".join(autores) if autores else "Autor desconocido"
+
+        editoriales = []
+        for editorial in info.get("publishers", []):
+            nombre = editorial.get("name")
+            if nombre:
+                editoriales.append(nombre)
+
+        editorial_texto = ", ".join(editoriales) if editoriales else "Editorial desconocida"
+
+        categorias = []
+        for categoria in info.get("subjects", [])[:8]:
+            nombre = categoria.get("name")
+            if nombre:
+                categorias.append(nombre)
+
+        categorias_texto = ", ".join(categorias) if categorias else "Sin categoría"
+
+        portada = ""
+        if isinstance(info.get("cover"), dict):
+            portada = info["cover"].get("large") or info["cover"].get("medium") or info["cover"].get("small") or ""
+
+        if not portada:
+            portada = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
+
+        return {
+            "fuente": "Open Library Books API",
+            "isbn": isbn,
+            "titulo": info.get("title", "Sin título"),
+            "autores": autores_texto,
+            "editorial": editorial_texto,
+            "fecha_publicacion": info.get("publish_date", "Fecha desconocida"),
+            "categorias": categorias_texto,
+            "descripcion": info.get("notes", "Sin descripción"),
+            "portada": portada,
+        }
+
+    except Exception:
+        return None
+
+
+def buscar_en_open_library_search_api(isbn, timeout=25):
+    try:
+        url = f"https://openlibrary.org/search.json?isbn={isbn}"
+        respuesta = requests.get(url, timeout=timeout)
+
+        if respuesta.status_code != 200:
+            return None
+
+        datos = respuesta.json()
+        docs = datos.get("docs", [])
+
+        if not docs:
+            return None
+
+        info = docs[0]
+
+        autores = info.get("author_name", [])
+        autores_texto = ", ".join(autores) if autores else "Autor desconocido"
+
+        editoriales = info.get("publisher", [])
+        editorial_texto = ", ".join(editoriales[:3]) if editoriales else "Editorial desconocida"
+
+        portada = ""
+        if info.get("cover_i"):
+            portada = f"https://covers.openlibrary.org/b/id/{info['cover_i']}-L.jpg"
+        else:
+            portada = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
+
+        return {
+            "fuente": "Open Library Search API",
+            "isbn": isbn,
+            "titulo": info.get("title", "Sin título"),
+            "autores": autores_texto,
+            "editorial": editorial_texto,
+            "fecha_publicacion": str(info.get("first_publish_year", "Fecha desconocida")),
+            "categorias": ", ".join(info.get("subject", ["Sin categoría"])[:6]) if info.get("subject") else "Sin categoría",
+            "descripcion": "Sin descripción",
+            "portada": portada,
+        }
+
+    except Exception:
+        return None
+
+
+def buscar_libro_por_isbn_rapido(isbn):
+    isbn = limpiar_isbn(isbn)
+
+    libro = buscar_en_google_books(isbn, timeout=6, busqueda_flexible=False)
     if libro:
         return libro
 
-    libro = buscar_en_open_library(isbn)
+    libro = buscar_en_open_library(isbn, timeout=6)
     if libro:
         return libro
 
     return None
+
+
+def buscar_libro_por_isbn_completo(isbn):
+    variantes = obtener_variantes_isbn(isbn)
+    tiempo_inicio = time.time()
+    limite_total = 180
+
+    for isbn_variante in variantes:
+        if time.time() - tiempo_inicio >= limite_total:
+            return None
+
+        libro = buscar_en_google_books(isbn_variante, timeout=12, busqueda_flexible=False)
+        if libro:
+            return libro
+
+        if time.time() - tiempo_inicio >= limite_total:
+            return None
+
+        libro = buscar_en_open_library(isbn_variante, timeout=12)
+        if libro:
+            return libro
+
+        if time.time() - tiempo_inicio >= limite_total:
+            return None
+
+        libro = buscar_en_google_books(isbn_variante, timeout=12, busqueda_flexible=True)
+        if libro:
+            return libro
+
+        if time.time() - tiempo_inicio >= limite_total:
+            return None
+
+        libro = buscar_en_open_library_books_api(isbn_variante, timeout=12)
+        if libro:
+            return libro
+
+        if time.time() - tiempo_inicio >= limite_total:
+            return None
+
+        libro = buscar_en_open_library_search_api(isbn_variante, timeout=12)
+        if libro:
+            return libro
+
+    return None
+
+
+def buscar_libro_por_isbn_a_fondo(isbn):
+    return buscar_libro_por_isbn_completo(isbn)
+
+
+def buscar_libro_por_isbn(isbn):
+    return buscar_libro_por_isbn_rapido(isbn)
 
 
 def obtener_executor_busqueda():
@@ -446,14 +761,24 @@ def obtener_executor_busqueda():
     return st.session_state["executor_busqueda"]
 
 
-def lanzar_busqueda_en_segundo_plano(item_id, isbn):
+
+def calcular_tiempo_maximo_busqueda(isbn, tipo_busqueda):
+    return 180
+
+
+def lanzar_busqueda_en_segundo_plano(item_id, isbn, tipo_busqueda="completa"):
     executor = obtener_executor_busqueda()
-    future = executor.submit(buscar_libro_por_isbn, isbn)
+    future = executor.submit(buscar_libro_por_isbn_completo, isbn)
 
     if "tareas_busqueda" not in st.session_state:
         st.session_state["tareas_busqueda"] = {}
 
-    st.session_state["tareas_busqueda"][item_id] = future
+    st.session_state["tareas_busqueda"][item_id] = {
+        "future": future,
+        "tipo_busqueda": "completa",
+        "inicio": time.time(),
+        "max_segundos": calcular_tiempo_maximo_busqueda(isbn, "completa"),
+    }
 
 
 def actualizar_resultados_busqueda():
@@ -462,7 +787,26 @@ def actualizar_resultados_busqueda():
 
     tareas_finalizadas = []
 
-    for item_id, future in list(st.session_state["tareas_busqueda"].items()):
+    for item_id, tarea in list(st.session_state["tareas_busqueda"].items()):
+        future = tarea["future"]
+        tipo_busqueda = tarea.get("tipo_busqueda", "rapida")
+        max_segundos = max(int(tarea.get("max_segundos", 1)), 1)
+        transcurrido = int(time.time() - tarea.get("inicio", time.time()))
+
+        if not future.done() and transcurrido >= max_segundos:
+            for item in st.session_state.get("cola_isbn", []):
+                if item["id"] != item_id:
+                    continue
+
+                item["estado"] = "no_encontrado"
+                item["mensaje"] = "No encontrado tras búsqueda completa"
+                item["libro"] = crear_libro_manual_base(item["isbn"])
+                break
+
+            tareas_finalizadas.append(item_id)
+            future.cancel()
+            continue
+
         if not future.done():
             continue
 
@@ -485,6 +829,8 @@ def actualizar_resultados_busqueda():
                 st.session_state["mostrar_aviso_libro_encontrado"] = True
             else:
                 item["estado"] = "no_encontrado"
+                item["mensaje"] = "No encontrado tras búsqueda completa"
+
                 item["libro"] = {
                     "fuente": "Manual",
                     "isbn": item["isbn"],
@@ -496,7 +842,6 @@ def actualizar_resultados_busqueda():
                     "descripcion": "",
                     "portada": "",
                 }
-                item["mensaje"] = "No encontrado"
 
             break
 
@@ -507,12 +852,96 @@ def actualizar_resultados_busqueda():
 def texto_estado_cola(estado):
     textos = {
         "pendiente": "⏳ Esperando",
-        "buscando": "🔎 Buscando",
+        "buscando": "🔎 Buscando libro",
+        "buscando_rapido": "🔎 Buscando libro",
+        "buscando_fondo": "🔎 Buscando libro",
         "encontrado": "✅ Encontrado",
         "no_encontrado": "⚠️ No encontrado",
+        "no_encontrado_rapido": "⚠️ No encontrado en búsqueda rápida",
+        "no_encontrado_fondo": "❌ No encontrado tras búsqueda a fondo",
+        "error_rapido": "⏱️ Búsqueda rápida agotada",
+        "error_fondo": "⏱️ Búsqueda a fondo agotada",
+        "isbn_no_valido": "⚠️ Revisar código",
+        "codigo_basura": "⚠️ Código no válido",
         "en_revision": "📚 En revisión",
     }
     return textos.get(estado, estado)
+
+
+def crear_libro_manual_base(isbn):
+    return {
+        "fuente": "Manual",
+        "isbn": isbn,
+        "titulo": "",
+        "autores": "",
+        "editorial": "",
+        "fecha_publicacion": "",
+        "categorias": "",
+        "descripcion": "",
+        "portada": "",
+    }
+
+
+def devolver_revision_anterior_a_bandeja(item_id_actual):
+    item_cola_activo_anterior = st.session_state.get("item_cola_activo")
+
+    if item_cola_activo_anterior is None or item_cola_activo_anterior == item_id_actual:
+        return
+
+    for item_anterior in st.session_state["cola_isbn"]:
+        if item_anterior["id"] == item_cola_activo_anterior and item_anterior["estado"] == "en_revision":
+            if item_anterior.get("libro") and item_anterior["libro"].get("fuente") == "Manual":
+                item_anterior["estado"] = "no_encontrado_fondo"
+            else:
+                item_anterior["estado"] = "encontrado"
+
+
+def abrir_revision_libro(item, item_id, libro):
+    devolver_revision_anterior_a_bandeja(item_id)
+    item["estado"] = "en_revision"
+    item["libro"] = libro
+    st.session_state["libro_encontrado"] = libro
+    st.session_state["item_cola_activo"] = item_id
+    st.session_state["mostrar_aviso_libro_encontrado"] = False
+    st.rerun()
+
+
+
+def abrir_ficha_manual(item, item_id):
+    libro_manual = crear_libro_manual_base(item["isbn"])
+    abrir_revision_libro(item, item_id, libro_manual)
+
+
+def abrir_ficha_manual_directa():
+    if "item_cola_activo" in st.session_state:
+        del st.session_state["item_cola_activo"]
+
+    st.session_state["libro_encontrado"] = crear_libro_manual_base("")
+    st.session_state["mostrar_aviso_libro_encontrado"] = False
+    st.rerun()
+
+
+def mostrar_progreso_busqueda(item_id):
+    tarea = st.session_state.get("tareas_busqueda", {}).get(item_id)
+
+    if not tarea:
+        return
+
+    max_segundos = max(int(tarea.get("max_segundos", 1)), 1)
+    transcurrido = int(time.time() - tarea.get("inicio", time.time()))
+    restante = max(max_segundos - transcurrido, 0)
+
+    if transcurrido >= max_segundos:
+        progreso = 0.95
+        texto_restante = "agotando último intento"
+    else:
+        progreso = min(transcurrido / max_segundos, 0.95)
+        texto_restante = f"restante estimado: {restante}s"
+
+    st.progress(progreso)
+    st.caption(
+        f"Tiempo buscando: {transcurrido}s · estimación: {max_segundos}s · {texto_restante}"
+    )
 
 
 def inicializar_estado():
@@ -536,7 +965,10 @@ def añadir_isbn_a_cola(biblioteca):
     isbn_escaneado = st.session_state.get("isbn_rapido", "")
     isbn_limpio = limpiar_isbn(isbn_escaneado)
 
-    if isbn_limpio:
+    if isbn_escaneado and not isbn_limpio:
+        st.session_state["mensaje_guardado"] = "El código introducido no contiene números de ISBN."
+
+    elif isbn_limpio:
         isbn_ya_en_cola = any(item["isbn"] == isbn_limpio for item in st.session_state["cola_isbn"])
         isbn_ya_guardado = isbn_limpio in biblioteca["isbn"].astype(str).values
 
@@ -544,15 +976,24 @@ def añadir_isbn_a_cola(biblioteca):
             st.session_state["contador_cola"] += 1
             nuevo_id = st.session_state["contador_cola"]
 
-            st.session_state["cola_isbn"].append({
-                "id": nuevo_id,
-                "isbn": isbn_limpio,
-                "estado": "buscando",
-                "libro": None,
-                "mensaje": "Buscando"
-            })
+            if es_codigo_basura(isbn_limpio):
+                st.session_state["cola_isbn"].append({
+                    "id": nuevo_id,
+                    "isbn": isbn_limpio,
+                    "estado": "codigo_basura",
+                    "libro": crear_libro_manual_base(isbn_limpio),
+                    "mensaje": "Código no válido o no reconocible"
+                })
+            else:
+                st.session_state["cola_isbn"].append({
+                    "id": nuevo_id,
+                    "isbn": isbn_limpio,
+                    "estado": "buscando",
+                    "libro": None,
+                    "mensaje": "Buscando libro"
+                })
 
-            lanzar_busqueda_en_segundo_plano(nuevo_id, isbn_limpio)
+                lanzar_busqueda_en_segundo_plano(nuevo_id, isbn_limpio, tipo_busqueda="completa")
         elif isbn_ya_guardado:
             st.session_state["mensaje_guardado"] = f"El ISBN {isbn_limpio} ya está guardado en la biblioteca."
         elif isbn_ya_en_cola:
@@ -708,6 +1149,9 @@ def mostrar_tab_añadir(biblioteca):
             args=(biblioteca,)
         )
 
+        if st.button("✍️ Crear ficha manual sin buscar"):
+            abrir_ficha_manual_directa()
+
         if st.session_state["cola_isbn"]:
             st.caption(f"ISBN en bandeja: {len(st.session_state['cola_isbn'])}")
             st.markdown("**Estado de la cola**")
@@ -741,54 +1185,156 @@ def mostrar_tab_añadir(biblioteca):
                     st.write(f"**{libro_item['titulo']}**")
                     st.caption(f"ISBN: {item['isbn']} · Fuente: {libro_item['fuente']}")
 
-                    col_revisar, col_descartar = st.columns(2)
+                    col_revisar, col_manual, col_descartar = st.columns(3)
 
                     with col_revisar:
                         if st.button("Revisar / guardar", key=f"revisar_{item_id}"):
-                            item_cola_activo_anterior = st.session_state.get("item_cola_activo")
-                            if item_cola_activo_anterior is not None and item_cola_activo_anterior != item_id:
-                                for item_anterior in st.session_state["cola_isbn"]:
-                                    if item_anterior["id"] == item_cola_activo_anterior and item_anterior["estado"] == "en_revision":
-                                        item_anterior["estado"] = "encontrado"
+                            abrir_revision_libro(item, item_id, libro_item)
 
-                            item["estado"] = "en_revision"
-                            st.session_state["libro_encontrado"] = libro_item
-                            st.session_state["item_cola_activo"] = item_id
-                            st.session_state["mostrar_aviso_libro_encontrado"] = False
-                            st.rerun()
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_encontrado_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
 
                     with col_descartar:
                         if st.button("Descartar", key=f"descartar_{item_id}"):
                             st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
                             st.rerun()
 
-                elif item["estado"] == "no_encontrado":
-                    st.warning("⚠️ Libro no encontrado")
+                elif item["estado"] == "no_encontrado_rapido":
+                    st.warning("⚠️ No encontrado en búsqueda rápida")
+                    st.caption(f"ISBN: {item['isbn']}")
+
+                    col_fondo, col_manual, col_descartar = st.columns(3)
+
+                    with col_fondo:
+                        if st.button("🔎 Buscar a fondo", key=f"fondo_{item_id}"):
+                            item["estado"] = "buscando_fondo"
+                            item["mensaje"] = "Búsqueda a fondo"
+                            lanzar_busqueda_en_segundo_plano(item_id, item["isbn"], tipo_busqueda="fondo")
+                            st.rerun()
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_rapido_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
+
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_rapido_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
+                            st.rerun()
+
+                elif item["estado"] == "error_rapido":
+                    st.warning("⏱️ La búsqueda rápida agotó el tiempo máximo")
+                    st.caption(f"ISBN: {item['isbn']} · No podemos confirmar si el libro existe en las bases consultadas.")
+
+                    col_reintentar, col_fondo, col_manual, col_descartar = st.columns(4)
+
+                    with col_reintentar:
+                        if st.button("🔁 Reintentar rápida", key=f"reintentar_rapida_{item_id}"):
+                            item["estado"] = "buscando_rapido"
+                            item["mensaje"] = "Búsqueda rápida"
+                            lanzar_busqueda_en_segundo_plano(item_id, item["isbn"], tipo_busqueda="rapida")
+                            st.rerun()
+
+                    with col_fondo:
+                        if st.button("🔎 Buscar a fondo", key=f"fondo_error_{item_id}"):
+                            item["estado"] = "buscando_fondo"
+                            item["mensaje"] = "Búsqueda a fondo"
+                            lanzar_busqueda_en_segundo_plano(item_id, item["isbn"], tipo_busqueda="fondo")
+                            st.rerun()
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_error_rapido_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
+
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_error_rapido_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
+                            st.rerun()
+
+                elif item["estado"] == "no_encontrado_fondo":
+                    st.error("❌ No encontrado tras búsqueda a fondo")
                     st.caption(f"ISBN: {item['isbn']}")
 
                     col_manual, col_descartar = st.columns(2)
 
                     with col_manual:
-                        if st.button("Crear ficha manual", key=f"manual_{item_id}"):
-                            item_cola_activo_anterior = st.session_state.get("item_cola_activo")
-                            if item_cola_activo_anterior is not None and item_cola_activo_anterior != item_id:
-                                for item_anterior in st.session_state["cola_isbn"]:
-                                    if item_anterior["id"] == item_cola_activo_anterior and item_anterior["estado"] == "en_revision":
-                                        item_anterior["estado"] = "encontrado"
+                        if st.button("Crear ficha manual", key=f"manual_fondo_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
 
-                            item["estado"] = "en_revision"
-                            st.session_state["libro_encontrado"] = item["libro"]
-                            st.session_state["item_cola_activo"] = item_id
-                            st.session_state["mostrar_aviso_libro_encontrado"] = False
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_fondo_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
                             st.rerun()
+
+                elif item["estado"] == "error_fondo":
+                    st.warning("⏱️ La búsqueda a fondo agotó el tiempo máximo")
+                    st.caption(f"ISBN: {item['isbn']} · Puedes reintentar o crear la ficha manual.")
+
+                    col_reintentar, col_manual, col_descartar = st.columns(3)
+
+                    with col_reintentar:
+                        if st.button("🔁 Reintentar fondo", key=f"reintentar_fondo_{item_id}"):
+                            item["estado"] = "buscando_fondo"
+                            item["mensaje"] = "Búsqueda a fondo"
+                            lanzar_busqueda_en_segundo_plano(item_id, item["isbn"], tipo_busqueda="fondo")
+                            st.rerun()
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_error_fondo_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
+
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_error_fondo_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
+                            st.rerun()
+
+                elif item["estado"] in ["buscando", "buscando_rapido", "buscando_fondo"]:
+                    st.info(f"🔎 Buscando libro... · ISBN: {item['isbn']}")
+                    mostrar_progreso_busqueda(item_id)
+
+                    col_manual, col_descartar = st.columns(2)
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_buscando_rapido_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
+
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_buscando_rapido_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
+                            st.rerun()
+
+                # bloque eliminado: elif item["estado"] == "buscando_fondo":
+
+
+                elif item["estado"] == "codigo_basura":
+                    st.warning("⚠️ Código no válido o no reconocible")
+                    st.caption(f"Código escaneado: {item['isbn']} · Parece un código basura, incompleto o no útil como ISBN.")
+
+                    col_manual, col_descartar = st.columns(2)
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_codigo_basura_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
+
+                    with col_descartar:
+                        if st.button("Descartar", key=f"descartar_codigo_basura_{item_id}"):
+                            st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
+                            st.rerun()
+
+                elif item["estado"] == "no_encontrado":
+                    st.error("❌ Libro no encontrado")
+                    st.caption(f"ISBN: {item['isbn']} · No se ha encontrado en las bases gratuitas consultadas.")
+
+                    col_manual, col_descartar = st.columns(2)
+
+                    with col_manual:
+                        if st.button("Crear ficha manual", key=f"manual_{item_id}"):
+                            abrir_ficha_manual(item, item_id)
 
                     with col_descartar:
                         if st.button("Descartar", key=f"descartar_no_{item_id}"):
                             st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
                             st.rerun()
-
-                elif item["estado"] == "buscando":
-                    st.info(f"🔎 Buscando · ISBN: {item['isbn']}")
 
                 elif item["estado"] == "en_revision":
                     st.info(f"📚 En revisión · ISBN: {item['isbn']}")
@@ -1013,6 +1559,7 @@ def mostrar_tab_estadisticas(biblioteca):
                     direction="horizontal",
                     columns=3,
                     labelFontSize=13,
+                    labelColor="#2f2a24",
                     symbolSize=140,
                     symbolStrokeWidth=0
                 )
@@ -1024,13 +1571,14 @@ def mostrar_tab_estadisticas(biblioteca):
         )
         .properties(width=380, height=460)
         .configure_view(strokeWidth=0)
+        .configure_legend(labelColor="#2f2a24", titleColor="#2f2a24")
         .configure(background="transparent")
     )
 
     col_espacio_izq, col_grafico, col_espacio_der = st.columns([1, 2, 1])
 
     with col_grafico:
-        st.altair_chart(grafico_estado, use_container_width=False)
+        st.altair_chart(grafico_estado, width="content", theme=None)
 
 
 def mostrar_tab_copia(biblioteca):
@@ -1060,9 +1608,6 @@ inicializar_estado()
 
 biblioteca = cargar_biblioteca()
 
-if "mensaje_guardado" in st.session_state:
-    st.success(st.session_state["mensaje_guardado"])
-    del st.session_state["mensaje_guardado"]
 
 pagina_actual = st.radio(
     "Navegación",
@@ -1076,6 +1621,10 @@ pagina_actual = st.radio(
     label_visibility="collapsed",
     key="pagina_actual"
 )
+
+if "mensaje_guardado" in st.session_state:
+    st.success(st.session_state["mensaje_guardado"])
+    del st.session_state["mensaje_guardado"]
 
 
 
