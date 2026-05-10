@@ -1331,6 +1331,7 @@ def buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original):
     return candidatos_unicos[:5]
 
 
+
 # --- Candidatos con portada por título/autor ---
 def buscar_candidatos_portada_por_titulo_autor(titulo, autor, isbn_original):
     candidatos = buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original)
@@ -1347,6 +1348,27 @@ def buscar_candidatos_portada_por_titulo_autor(titulo, autor, isbn_original):
         candidatos_con_portada.append(candidato)
 
     return candidatos_con_portada[:5]
+
+
+def buscar_candidatos_datos_complementarios(titulo, autor, isbn_original):
+    candidatos = buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original)
+    candidatos_validos = []
+
+    for candidato in candidatos:
+        libro = candidato.get("libro", {})
+        datos_utiles = [
+            libro.get("portada", ""),
+            libro.get("autores", ""),
+            libro.get("editorial", ""),
+            libro.get("fecha_publicacion", ""),
+            libro.get("categorias", ""),
+            libro.get("descripcion", ""),
+        ]
+
+        if any(valor and valor not in ["Autor desconocido", "Editorial desconocida", "Fecha desconocida", "Sin categoría", "Sin descripción"] for valor in datos_utiles):
+            candidatos_validos.append(candidato)
+
+    return candidatos_validos[:5]
 
 
 def buscar_libro_por_isbn_rapido(isbn):
@@ -1716,50 +1738,98 @@ def mostrar_ficha_revision(biblioteca):
         else:
             st.info("Sin portada disponible")
 
-            if libro.get("titulo"):
-                if st.button("🔍 Buscar portada en otras ediciones", key="buscar_portadas_otras_ediciones"):
-                    st.session_state["candidatos_portada"] = buscar_candidatos_portada_por_titulo_autor(
-                        libro.get("titulo", ""),
-                        libro.get("autores", ""),
-                        libro.get("isbn", "")
-                    )
+        if libro.get("titulo"):
+            st.markdown("### Completar datos")
+            st.caption("Busca otras ediciones parecidas y elige manualmente qué datos quieres rellenar. El ISBN físico nunca cambia.")
 
-                candidatos_portada = st.session_state.get("candidatos_portada", [])
+            if st.button("🔍 Buscar datos en otras ediciones", key="buscar_datos_otras_ediciones"):
+                st.session_state["candidatos_datos"] = buscar_candidatos_datos_complementarios(
+                    libro.get("titulo", ""),
+                    libro.get("autores", ""),
+                    libro.get("isbn", "")
+                )
 
-                if "candidatos_portada" in st.session_state and not candidatos_portada:
-                    st.warning("No se han encontrado portadas alternativas suficientemente parecidas.")
+            candidatos_datos = st.session_state.get("candidatos_datos", [])
 
-                if candidatos_portada:
-                    st.markdown("**Portadas encontradas**")
-                    st.caption("Elige una portada. Solo se rellenará la URL de portada; el ISBN físico no cambia.")
+            if "candidatos_datos" in st.session_state and not candidatos_datos:
+                st.warning("No se han encontrado datos alternativos suficientemente parecidos.")
 
-                    for indice, candidato in enumerate(candidatos_portada, start=1):
-                        libro_candidato = candidato["libro"]
-                        portada_candidata = libro_candidato.get("portada", "")
+            if candidatos_datos:
+                st.markdown("**Datos encontrados en otras ediciones**")
+                st.caption("Selecciona una edición y marca solo los campos que quieras copiar. Después revisa la ficha antes de guardar.")
 
-                        with st.container(border=True):
-                            if portada_candidata:
-                                st.image(portada_candidata, width=95)
+                for indice, candidato in enumerate(candidatos_datos, start=1):
+                    libro_candidato = candidato["libro"]
+                    portada_candidata = libro_candidato.get("portada", "") or ""
 
-                            st.caption(
-                                f"{libro_candidato.get('titulo', 'Título desconocido')} · "
-                                f"{libro_candidato.get('autores', 'Autor desconocido')}"
+                    with st.container(border=True):
+                        if portada_candidata:
+                            st.image(portada_candidata, width=95)
+
+                        st.write(f"**{indice}. {libro_candidato.get('titulo', 'Título desconocido')}**")
+                        st.caption(
+                            f"{libro_candidato.get('autores', 'Autor desconocido')} · "
+                            f"{libro_candidato.get('editorial', 'Editorial desconocida')} · "
+                            f"{libro_candidato.get('fecha_publicacion', 'Fecha desconocida')} · "
+                            f"Fuente: {libro_candidato.get('fuente', 'Fuente desconocida')} · "
+                            f"Coincidencia: {candidato.get('puntuacion', '')}%"
+                        )
+                        if candidato.get("isbn_encontrado"):
+                            st.caption(f"ISBN de la ficha encontrada: {candidato['isbn_encontrado']}")
+                        st.caption(f"ISBN físico que se conserva: {libro.get('isbn', '')}")
+
+                        campos_disponibles = {
+                            "portada": ("Portada", portada_candidata),
+                            "autores": ("Autor/es", libro_candidato.get("autores", "")),
+                            "editorial": ("Editorial", libro_candidato.get("editorial", "")),
+                            "fecha_publicacion": ("Fecha publicación", libro_candidato.get("fecha_publicacion", "")),
+                            "categorias": ("Categoría", libro_candidato.get("categorias", "")),
+                            "descripcion": ("Descripción", libro_candidato.get("descripcion", "")),
+                        }
+
+                        campos_seleccionados = []
+
+                        for campo, (etiqueta, valor) in campos_disponibles.items():
+                            if not valor or valor in ["Autor desconocido", "Editorial desconocida", "Fecha desconocida", "Sin categoría", "Sin descripción"]:
+                                continue
+
+                            valor_preview = str(valor)
+                            if len(valor_preview) > 90:
+                                valor_preview = valor_preview[:90] + "..."
+
+                            marcar = st.checkbox(
+                                f"{etiqueta}: {valor_preview}",
+                                key=f"campo_dato_{indice}_{campo}"
                             )
-                            st.caption(
-                                f"{libro_candidato.get('editorial', 'Editorial desconocida')} · "
-                                f"{libro_candidato.get('fecha_publicacion', 'Fecha desconocida')} · "
-                                f"Fuente: {libro_candidato.get('fuente', 'Fuente desconocida')}"
-                            )
-                            if candidato.get("isbn_encontrado"):
-                                st.caption(f"ISBN de la ficha encontrada: {candidato['isbn_encontrado']}")
-                            st.caption(f"ISBN físico que se conserva: {libro.get('isbn', '')}")
+                            if marcar:
+                                campos_seleccionados.append(campo)
 
-                            if st.button("Usar esta portada", key=f"usar_portada_{indice}"):
-                                st.session_state["libro_encontrado"]["portada"] = portada_candidata
-                                if "nuevo_portada" in st.session_state:
-                                    del st.session_state["nuevo_portada"]
+                        if st.button("Usar datos seleccionados", key=f"usar_datos_{indice}"):
+                            if not campos_seleccionados:
+                                st.warning("Marca al menos un campo antes de aplicar datos.")
+                            else:
+                                mapa_widgets = {
+                                    "portada": "nuevo_portada",
+                                    "autores": "nuevo_autores",
+                                    "editorial": "nuevo_editorial",
+                                    "fecha_publicacion": "nuevo_fecha",
+                                    "categorias": "nuevo_categorias",
+                                    "descripcion": "nuevo_descripcion",
+                                }
+
+                                for campo in campos_seleccionados:
+                                    valor_nuevo = campos_disponibles[campo][1]
+                                    st.session_state["libro_encontrado"][campo] = valor_nuevo
+
+                                    clave_widget = mapa_widgets.get(campo)
+                                    if clave_widget:
+                                        st.session_state[clave_widget] = valor_nuevo
+
+                                if "candidatos_datos" in st.session_state:
+                                    del st.session_state["candidatos_datos"]
                                 if "candidatos_portada" in st.session_state:
                                     del st.session_state["candidatos_portada"]
+
                                 st.rerun()
 
     with col2:
@@ -1822,6 +1892,8 @@ def mostrar_ficha_revision(biblioteca):
 
                     if "candidatos_portada" in st.session_state:
                         del st.session_state["candidatos_portada"]
+                    if "candidatos_datos" in st.session_state:
+                        del st.session_state["candidatos_datos"]
 
                     del st.session_state["libro_encontrado"]
                     st.rerun()
@@ -1843,6 +1915,8 @@ def mostrar_ficha_revision(biblioteca):
 
                 if "candidatos_portada" in st.session_state:
                     del st.session_state["candidatos_portada"]
+                if "candidatos_datos" in st.session_state:
+                    del st.session_state["candidatos_datos"]
 
                 del st.session_state["libro_encontrado"]
                 st.rerun()
