@@ -3,6 +3,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -360,10 +361,19 @@ st.markdown(
 
 
 
+
 def limpiar_isbn(isbn):
     isbn_limpio = isbn.strip().upper()
     isbn_limpio = re.sub(r"[^0-9X]", "", isbn_limpio)
     return isbn_limpio
+
+
+def normalizar_texto_busqueda(texto):
+    texto = (texto or "").strip()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(caracter for caracter in texto if not unicodedata.combining(caracter))
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip()
 
 
 def es_isbn10_valido(isbn):
@@ -615,6 +625,63 @@ def buscar_en_google_books(isbn, timeout=10, busqueda_flexible=False):
         return None
 
 
+# --- Búsqueda por título/autor en Google Books ---
+def buscar_en_google_books_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    try:
+        titulo = normalizar_texto_busqueda(titulo)
+        autor = normalizar_texto_busqueda(autor)
+
+        if not titulo:
+            return None
+
+        consultas = []
+
+        if autor:
+            consultas.append(f'"{titulo}" "{autor}"')
+            consultas.append(f'{titulo} {autor}')
+            consultas.append(f'intitle:{titulo} inauthor:{autor}')
+
+        consultas.append(f'"{titulo}"')
+        consultas.append(titulo)
+
+        url = "https://www.googleapis.com/books/v1/volumes"
+
+        for consulta in consultas:
+            respuesta = requests.get(url, params={"q": consulta, "maxResults": 10}, timeout=timeout)
+
+            if respuesta.status_code != 200:
+                continue
+
+            datos = respuesta.json()
+
+            if datos.get("totalItems", 0) == 0 or not datos.get("items"):
+                continue
+
+            for item in datos.get("items", []):
+                info = item.get("volumeInfo", {})
+                titulo_encontrado = info.get("title", "")
+
+                if not titulo_encontrado:
+                    continue
+
+                return {
+                    "fuente": "Google Books por título/autor",
+                    "isbn": isbn_original,
+                    "titulo": titulo_encontrado or titulo,
+                    "autores": ", ".join(info.get("authors", [autor or "Autor desconocido"])),
+                    "editorial": info.get("publisher", "Editorial desconocida"),
+                    "fecha_publicacion": info.get("publishedDate", "Fecha desconocida"),
+                    "categorias": ", ".join(info.get("categories", ["Sin categoría"])),
+                    "descripcion": info.get("description", "Sin descripción"),
+                    "portada": info.get("imageLinks", {}).get("thumbnail", ""),
+                }
+
+        return None
+
+    except Exception:
+        return None
+
+
 def buscar_en_open_library(isbn, timeout=10):
     try:
         url = f"https://openlibrary.org/isbn/{isbn}.json"
@@ -819,6 +886,87 @@ def buscar_en_open_library_search_api(isbn, timeout=25):
         return None
 
 
+# --- Búsqueda por título/autor en Open Library ---
+def buscar_en_open_library_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    try:
+        titulo = normalizar_texto_busqueda(titulo)
+        autor = normalizar_texto_busqueda(autor)
+
+        if not titulo:
+            return None
+
+        url = "https://openlibrary.org/search.json"
+        consultas = []
+
+        parametros_titulo = {
+            "title": titulo,
+            "limit": 10,
+        }
+        if autor:
+            parametros_titulo["author"] = autor
+        consultas.append(parametros_titulo)
+
+        if autor:
+            consultas.append({"q": f'"{titulo}" "{autor}"', "limit": 10})
+            consultas.append({"q": f"{titulo} {autor}", "limit": 10})
+
+        consultas.append({"q": f'"{titulo}"', "limit": 10})
+        consultas.append({"q": titulo, "limit": 10})
+
+        for parametros in consultas:
+            respuesta = requests.get(url, params=parametros, timeout=timeout)
+
+            if respuesta.status_code != 200:
+                continue
+
+            datos = respuesta.json()
+            docs = datos.get("docs", [])
+
+            if not docs:
+                continue
+
+            info = docs[0]
+
+            autores = info.get("author_name", [])
+            autores_texto = ", ".join(autores) if autores else (autor or "Autor desconocido")
+
+            editoriales = info.get("publisher", [])
+            editorial_texto = ", ".join(editoriales[:3]) if editoriales else "Editorial desconocida"
+
+            portada = ""
+            if info.get("cover_i"):
+                portada = f"https://covers.openlibrary.org/b/id/{info['cover_i']}-L.jpg"
+
+            return {
+                "fuente": "Open Library por título/autor",
+                "isbn": isbn_original,
+                "titulo": info.get("title", titulo),
+                "autores": autores_texto,
+                "editorial": editorial_texto,
+                "fecha_publicacion": str(info.get("first_publish_year", "Fecha desconocida")),
+                "categorias": ", ".join(info.get("subject", ["Sin categoría"])[:6]) if info.get("subject") else "Sin categoría",
+                "descripcion": "Sin descripción",
+                "portada": portada,
+            }
+
+        return None
+
+    except Exception:
+        return None
+
+
+def buscar_libro_por_titulo_autor(titulo, autor, isbn_original):
+    libro = buscar_en_google_books_por_texto(titulo, autor, isbn_original, timeout=20)
+    if libro:
+        return libro
+
+    libro = buscar_en_open_library_por_texto(titulo, autor, isbn_original, timeout=20)
+    if libro:
+        return libro
+
+    return None
+
+
 def buscar_libro_por_isbn_rapido(isbn):
     isbn = limpiar_isbn(isbn)
 
@@ -834,7 +982,10 @@ def buscar_libro_por_isbn_rapido(isbn):
 
 
 def buscar_libro_por_isbn_completo(isbn):
-    variantes = obtener_variantes_isbn(isbn)
+    isbn_limpio = limpiar_isbn(isbn)
+
+
+    variantes = obtener_variantes_isbn(isbn_limpio)
     tiempo_inicio = time.time()
     limite_total = 180
 
@@ -1452,10 +1603,35 @@ def mostrar_tab_añadir(biblioteca):
                             st.rerun()
 
                 elif item["estado"] == "no_encontrado":
-                    st.error("❌ Libro no encontrado")
-                    st.caption(f"ISBN: {item['isbn']} · No se ha encontrado en las bases gratuitas consultadas.")
+                    st.error("❌ Libro no encontrado por ISBN")
+                    st.caption(f"ISBN físico: {item['isbn']} · No se ha encontrado ese ISBN en las bases gratuitas consultadas.")
 
-                    col_manual, col_descartar = st.columns(2)
+                    st.markdown("**Buscar por título/autor**")
+                    titulo_busqueda = st.text_input(
+                        "Título",
+                        placeholder="Ejemplo: El sueño de la espada",
+                        key=f"titulo_busqueda_{item_id}"
+                    )
+                    autor_busqueda = st.text_input(
+                        "Autor/a",
+                        placeholder="Ejemplo: Manuel Sánchez",
+                        key=f"autor_busqueda_{item_id}"
+                    )
+
+                    col_buscar_texto, col_manual, col_descartar = st.columns(3)
+
+                    with col_buscar_texto:
+                        if st.button("🔍 Buscar por título/autor", key=f"buscar_texto_{item_id}"):
+                            libro_por_texto = buscar_libro_por_titulo_autor(
+                                titulo_busqueda,
+                                autor_busqueda,
+                                item["isbn"]
+                            )
+
+                            if libro_por_texto:
+                                abrir_revision_libro(item, item_id, libro_por_texto)
+                            else:
+                                st.warning("No se ha encontrado ningún resultado claro por título/autor.")
 
                     with col_manual:
                         if st.button("Crear ficha manual", key=f"manual_{item_id}"):
