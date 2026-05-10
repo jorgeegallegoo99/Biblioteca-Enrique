@@ -690,25 +690,38 @@ def obtener_nombre_autor_open_library(author_key, timeout=3):
 
 def buscar_en_google_books(isbn, timeout=10, busqueda_flexible=False):
     try:
-        if busqueda_flexible:
-            url = f"https://www.googleapis.com/books/v1/volumes?q={isbn}"
-        else:
-            url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
+        url = "https://www.googleapis.com/books/v1/volumes"
 
-        respuesta = requests.get(url, timeout=timeout)
+        if busqueda_flexible:
+            consulta = isbn
+            fuente = "Google Books flexible"
+        else:
+            consulta = f"isbn:{isbn}"
+            fuente = "Google Books ISBN exacto"
+
+        respuesta = requests.get(
+            url,
+            params={
+                "q": consulta,
+                "maxResults": 5,
+                "printType": "books",
+                "country": "ES",
+            },
+            timeout=timeout
+        )
 
         if respuesta.status_code != 200:
             return None
 
         datos = respuesta.json()
 
-        if datos.get("totalItems", 0) == 0:
+        if datos.get("totalItems", 0) == 0 or not datos.get("items"):
             return None
 
         info = datos["items"][0]["volumeInfo"]
 
         return {
-            "fuente": "Google Books",
+            "fuente": fuente,
             "isbn": isbn,
             "titulo": info.get("title", "Sin título"),
             "autores": ", ".join(info.get("authors", ["Autor desconocido"])),
@@ -1021,6 +1034,179 @@ def buscar_en_open_library_search_api(isbn, timeout=25):
     except Exception:
         return None
 
+
+# --- Diagnóstico de búsqueda por ISBN ---
+def extraer_resumen_google_books(datos):
+    resumen = {
+        "totalItems": datos.get("totalItems", 0),
+        "primer_titulo": "",
+        "primer_autor": "",
+        "primer_editorial": "",
+        "primer_isbn": "",
+    }
+
+    items = datos.get("items", []) or []
+    if not items:
+        return resumen
+
+    info = items[0].get("volumeInfo", {})
+    resumen["primer_titulo"] = info.get("title", "")
+    resumen["primer_autor"] = ", ".join(info.get("authors", []))
+    resumen["primer_editorial"] = info.get("publisher", "")
+    resumen["primer_isbn"] = extraer_isbnes_google_books(info)
+    return resumen
+
+
+def diagnosticar_busqueda_isbn(isbn):
+    isbn_limpio = limpiar_isbn(isbn)
+    variantes = obtener_variantes_isbn(isbn_limpio)
+    resultados = []
+
+    for isbn_variante in variantes:
+        # Google Books API: búsqueda exacta por operador ISBN
+        try:
+            respuesta = requests.get(
+                "https://www.googleapis.com/books/v1/volumes",
+                params={
+                    "q": f"isbn:{isbn_variante}",
+                    "maxResults": 5,
+                    "printType": "books",
+                    "country": "ES",
+                },
+                timeout=12
+            )
+            info = {"status_code": respuesta.status_code}
+            if respuesta.status_code == 200:
+                info.update(extraer_resumen_google_books(respuesta.json()))
+            resultados.append({
+                "fuente": "Google Books API - ISBN exacto",
+                "isbn_probado": isbn_variante,
+                **info,
+            })
+        except Exception as error:
+            resultados.append({
+                "fuente": "Google Books API - ISBN exacto",
+                "isbn_probado": isbn_variante,
+                "error": str(error),
+            })
+
+        # Google Books API: búsqueda flexible por número
+        try:
+            respuesta = requests.get(
+                "https://www.googleapis.com/books/v1/volumes",
+                params={
+                    "q": isbn_variante,
+                    "maxResults": 5,
+                    "printType": "books",
+                    "country": "ES",
+                },
+                timeout=12
+            )
+            info = {"status_code": respuesta.status_code}
+            if respuesta.status_code == 200:
+                info.update(extraer_resumen_google_books(respuesta.json()))
+            resultados.append({
+                "fuente": "Google Books API - flexible",
+                "isbn_probado": isbn_variante,
+                **info,
+            })
+        except Exception as error:
+            resultados.append({
+                "fuente": "Google Books API - flexible",
+                "isbn_probado": isbn_variante,
+                "error": str(error),
+            })
+
+        # Open Library /isbn/
+        try:
+            respuesta = requests.get(f"https://openlibrary.org/isbn/{isbn_variante}.json", timeout=12)
+            titulo = ""
+            if respuesta.status_code == 200:
+                titulo = respuesta.json().get("title", "")
+            resultados.append({
+                "fuente": "Open Library - ISBN exacto",
+                "isbn_probado": isbn_variante,
+                "status_code": respuesta.status_code,
+                "primer_titulo": titulo,
+            })
+        except Exception as error:
+            resultados.append({
+                "fuente": "Open Library - ISBN exacto",
+                "isbn_probado": isbn_variante,
+                "error": str(error),
+            })
+
+        # Open Library Books API
+        try:
+            respuesta = requests.get(
+                "https://openlibrary.org/api/books",
+                params={
+                    "bibkeys": f"ISBN:{isbn_variante}",
+                    "format": "json",
+                    "jscmd": "data",
+                },
+                timeout=12
+            )
+            titulo = ""
+            encontrado = False
+            if respuesta.status_code == 200:
+                datos = respuesta.json()
+                clave = f"ISBN:{isbn_variante}"
+                encontrado = clave in datos
+                if encontrado:
+                    titulo = datos[clave].get("title", "")
+            resultados.append({
+                "fuente": "Open Library - Books API",
+                "isbn_probado": isbn_variante,
+                "status_code": respuesta.status_code,
+                "totalItems": 1 if encontrado else 0,
+                "primer_titulo": titulo,
+            })
+        except Exception as error:
+            resultados.append({
+                "fuente": "Open Library - Books API",
+                "isbn_probado": isbn_variante,
+                "error": str(error),
+            })
+
+        # Open Library Search API por ISBN
+        try:
+            respuesta = requests.get(
+                "https://openlibrary.org/search.json",
+                params={"isbn": isbn_variante, "limit": 5},
+                timeout=12
+            )
+            total = 0
+            titulo = ""
+            autores = ""
+            if respuesta.status_code == 200:
+                datos = respuesta.json()
+                docs = datos.get("docs", []) or []
+                total = len(docs)
+                if docs:
+                    titulo = docs[0].get("title", "")
+                    autores = ", ".join(docs[0].get("author_name", []))
+            resultados.append({
+                "fuente": "Open Library - Search API ISBN",
+                "isbn_probado": isbn_variante,
+                "status_code": respuesta.status_code,
+                "totalItems": total,
+                "primer_titulo": titulo,
+                "primer_autor": autores,
+            })
+        except Exception as error:
+            resultados.append({
+                "fuente": "Open Library - Search API ISBN",
+                "isbn_probado": isbn_variante,
+                "error": str(error),
+            })
+
+    return {
+        "isbn_introducido": isbn,
+        "isbn_limpio": isbn_limpio,
+        "variantes": variantes,
+        "resultados": resultados,
+    }
 
 # --- Búsqueda por título/autor en Open Library ---
 def buscar_candidatos_open_library_por_texto(titulo, autor="", isbn_original="", timeout=15):
@@ -1796,7 +1982,7 @@ def mostrar_tab_añadir(biblioteca):
                         key=f"autor_busqueda_{item_id}"
                     )
 
-                    col_buscar_texto, col_manual, col_descartar = st.columns(3)
+                    col_buscar_texto, col_diagnostico, col_manual, col_descartar = st.columns(4)
 
                     with col_buscar_texto:
                         if st.button("🔍 Buscar por título/autor", key=f"buscar_texto_{item_id}"):
@@ -1811,6 +1997,10 @@ def mostrar_tab_añadir(biblioteca):
                             if not candidatos:
                                 st.warning("No se ha encontrado ningún resultado suficientemente parecido por título/autor.")
 
+                    with col_diagnostico:
+                        if st.button("🧪 Diagnosticar ISBN", key=f"boton_diagnostico_isbn_{item_id}"):
+                            st.session_state[f"resultado_diagnostico_isbn_{item_id}"] = diagnosticar_busqueda_isbn(item["isbn"])
+
                     with col_manual:
                         if st.button("Crear ficha manual", key=f"manual_{item_id}"):
                             abrir_ficha_manual(item, item_id)
@@ -1819,6 +2009,32 @@ def mostrar_tab_añadir(biblioteca):
                         if st.button("Descartar", key=f"descartar_no_{item_id}"):
                             st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
                             st.rerun()
+
+                    diagnostico_guardado = st.session_state.get(f"resultado_diagnostico_isbn_{item_id}")
+                    if diagnostico_guardado:
+                        st.markdown("**Diagnóstico de búsqueda por ISBN**")
+                        st.caption(
+                            f"ISBN introducido: {diagnostico_guardado['isbn_introducido']} · "
+                            f"ISBN limpio: {diagnostico_guardado['isbn_limpio']} · "
+                            f"Variantes probadas: {', '.join(diagnostico_guardado['variantes'])}"
+                        )
+
+                        tabla_diagnostico = pd.DataFrame(diagnostico_guardado["resultados"])
+                        columnas_diagnostico = [
+                            columna for columna in [
+                                "fuente",
+                                "isbn_probado",
+                                "status_code",
+                                "totalItems",
+                                "primer_titulo",
+                                "primer_autor",
+                                "primer_editorial",
+                                "primer_isbn",
+                                "error",
+                            ]
+                            if columna in tabla_diagnostico.columns
+                        ]
+                        st.dataframe(tabla_diagnostico[columnas_diagnostico], width="stretch", hide_index=True)
 
                     candidatos_guardados = st.session_state.get(f"candidatos_texto_{item_id}", [])
                     if candidatos_guardados:
