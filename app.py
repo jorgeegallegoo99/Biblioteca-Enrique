@@ -6,6 +6,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from difflib import SequenceMatcher
 
 import altair as alt
 import pandas as pd
@@ -376,6 +377,103 @@ def normalizar_texto_busqueda(texto):
     return texto.strip()
 
 
+def obtener_tokens_significativos(texto):
+    texto = normalizar_texto_busqueda(texto).lower()
+    palabras_vacias = {
+        "a", "al", "de", "del", "el", "en", "la", "las", "lo", "los", "un", "una", "unos", "unas",
+        "y", "o", "por", "para", "con", "sin", "sobre", "the", "of", "and"
+    }
+    tokens = re.findall(r"[a-z0-9]+", texto)
+    return [token for token in tokens if token not in palabras_vacias and len(token) > 2]
+
+
+def calcular_puntuacion_resultado_texto(titulo_buscado, autor_buscado, titulo_resultado, autores_resultado):
+    titulo_buscado_norm = normalizar_texto_busqueda(titulo_buscado).lower()
+    autor_buscado_norm = normalizar_texto_busqueda(autor_buscado).lower()
+    titulo_resultado_norm = normalizar_texto_busqueda(titulo_resultado).lower()
+    autores_resultado_norm = normalizar_texto_busqueda(autores_resultado).lower()
+
+    if not titulo_buscado_norm or not titulo_resultado_norm:
+        return 0
+
+    puntuacion = 0
+    similitud_titulo = SequenceMatcher(None, titulo_buscado_norm, titulo_resultado_norm).ratio()
+    puntuacion += similitud_titulo * 65
+
+    tokens_buscados = obtener_tokens_significativos(titulo_buscado_norm)
+    tokens_resultado = set(obtener_tokens_significativos(titulo_resultado_norm))
+
+    if tokens_buscados:
+        coincidencias = sum(1 for token in tokens_buscados if token in tokens_resultado)
+        cobertura = coincidencias / len(tokens_buscados)
+        puntuacion += cobertura * 25
+
+        if cobertura < 0.6:
+            puntuacion -= 30
+
+    if autor_buscado_norm:
+        tokens_autor = obtener_tokens_significativos(autor_buscado_norm)
+        coincidencias_autor = sum(1 for token in tokens_autor if token in autores_resultado_norm)
+        if tokens_autor:
+            cobertura_autor = coincidencias_autor / len(tokens_autor)
+            puntuacion += cobertura_autor * 30
+            if cobertura_autor == 0:
+                puntuacion -= 25
+
+    if len(titulo_resultado_norm) > len(titulo_buscado_norm) * 2.2:
+        puntuacion -= 15
+
+    return max(round(puntuacion, 1), 0)
+
+
+def extraer_isbnes_google_books(info):
+    identificadores = info.get("industryIdentifiers", []) or []
+    isbnes = []
+    for identificador in identificadores:
+        valor = limpiar_isbn(identificador.get("identifier", ""))
+        if valor and valor not in isbnes:
+            isbnes.append(valor)
+    return ", ".join(isbnes)
+
+
+def crear_libro_desde_google_books_info(info, isbn_original, fuente="Google Books por título/autor"):
+    return {
+        "fuente": fuente,
+        "isbn": isbn_original,
+        "titulo": info.get("title", "Título desconocido"),
+        "autores": ", ".join(info.get("authors", ["Autor desconocido"])),
+        "editorial": info.get("publisher", "Editorial desconocida"),
+        "fecha_publicacion": info.get("publishedDate", "Fecha desconocida"),
+        "categorias": ", ".join(info.get("categories", ["Sin categoría"])),
+        "descripcion": info.get("description", "Sin descripción"),
+        "portada": info.get("imageLinks", {}).get("thumbnail", ""),
+    }
+
+
+def crear_libro_desde_open_library_doc(info, isbn_original, fuente="Open Library por título/autor"):
+    autores = info.get("author_name", [])
+    autores_texto = ", ".join(autores) if autores else "Autor desconocido"
+
+    editoriales = info.get("publisher", [])
+    editorial_texto = ", ".join(editoriales[:3]) if editoriales else "Editorial desconocida"
+
+    portada = ""
+    if info.get("cover_i"):
+        portada = f"https://covers.openlibrary.org/b/id/{info['cover_i']}-L.jpg"
+
+    return {
+        "fuente": fuente,
+        "isbn": isbn_original,
+        "titulo": info.get("title", "Título desconocido"),
+        "autores": autores_texto,
+        "editorial": editorial_texto,
+        "fecha_publicacion": str(info.get("first_publish_year", "Fecha desconocida")),
+        "categorias": ", ".join(info.get("subject", ["Sin categoría"])[:6]) if info.get("subject") else "Sin categoría",
+        "descripcion": "Sin descripción",
+        "portada": portada,
+    }
+
+
 def es_isbn10_valido(isbn):
     isbn = limpiar_isbn(isbn)
 
@@ -626,13 +724,16 @@ def buscar_en_google_books(isbn, timeout=10, busqueda_flexible=False):
 
 
 # --- Búsqueda por título/autor en Google Books ---
-def buscar_en_google_books_por_texto(titulo, autor="", isbn_original="", timeout=15):
+def buscar_candidatos_google_books_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    candidatos = []
+    candidatos_vistos = set()
+
     try:
         titulo = normalizar_texto_busqueda(titulo)
         autor = normalizar_texto_busqueda(autor)
 
         if not titulo:
-            return None
+            return []
 
         consultas = []
 
@@ -647,7 +748,18 @@ def buscar_en_google_books_por_texto(titulo, autor="", isbn_original="", timeout
         url = "https://www.googleapis.com/books/v1/volumes"
 
         for consulta in consultas:
-            respuesta = requests.get(url, params={"q": consulta, "maxResults": 10}, timeout=timeout)
+            respuesta = requests.get(
+                url,
+                params={
+                    "q": consulta,
+                    "maxResults": 20,
+                    "langRestrict": "es",
+                    "printType": "books",
+                    "orderBy": "relevance",
+                    "country": "ES",
+                },
+                timeout=timeout
+            )
 
             if respuesta.status_code != 200:
                 continue
@@ -660,26 +772,50 @@ def buscar_en_google_books_por_texto(titulo, autor="", isbn_original="", timeout
             for item in datos.get("items", []):
                 info = item.get("volumeInfo", {})
                 titulo_encontrado = info.get("title", "")
+                autores_encontrados = ", ".join(info.get("authors", []))
 
                 if not titulo_encontrado:
                     continue
 
-                return {
-                    "fuente": "Google Books por título/autor",
-                    "isbn": isbn_original,
-                    "titulo": titulo_encontrado or titulo,
-                    "autores": ", ".join(info.get("authors", [autor or "Autor desconocido"])),
-                    "editorial": info.get("publisher", "Editorial desconocida"),
-                    "fecha_publicacion": info.get("publishedDate", "Fecha desconocida"),
-                    "categorias": ", ".join(info.get("categories", ["Sin categoría"])),
-                    "descripcion": info.get("description", "Sin descripción"),
-                    "portada": info.get("imageLinks", {}).get("thumbnail", ""),
-                }
+                puntuacion = calcular_puntuacion_resultado_texto(
+                    titulo,
+                    autor,
+                    titulo_encontrado,
+                    autores_encontrados
+                )
 
-        return None
+                if puntuacion < 65:
+                    continue
+
+                clave = f"google|{normalizar_texto_busqueda(titulo_encontrado).lower()}|{normalizar_texto_busqueda(autores_encontrados).lower()}"
+                if clave in candidatos_vistos:
+                    continue
+                candidatos_vistos.add(clave)
+
+                libro = crear_libro_desde_google_books_info(info, isbn_original)
+                candidatos.append({
+                    "libro": libro,
+                    "titulo": libro["titulo"],
+                    "autores": libro["autores"],
+                    "editorial": libro["editorial"],
+                    "fecha_publicacion": libro["fecha_publicacion"],
+                    "fuente": libro["fuente"],
+                    "isbn_original": isbn_original,
+                    "isbn_encontrado": extraer_isbnes_google_books(info),
+                    "puntuacion": puntuacion,
+                })
+
+        return sorted(candidatos, key=lambda candidato: candidato["puntuacion"], reverse=True)
 
     except Exception:
-        return None
+        return []
+
+
+def buscar_en_google_books_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    candidatos = buscar_candidatos_google_books_por_texto(titulo, autor, isbn_original, timeout)
+    if candidatos:
+        return candidatos[0]["libro"]
+    return None
 
 
 def buscar_en_open_library(isbn, timeout=10):
@@ -887,31 +1023,35 @@ def buscar_en_open_library_search_api(isbn, timeout=25):
 
 
 # --- Búsqueda por título/autor en Open Library ---
-def buscar_en_open_library_por_texto(titulo, autor="", isbn_original="", timeout=15):
+def buscar_candidatos_open_library_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    candidatos = []
+    candidatos_vistos = set()
+
     try:
         titulo = normalizar_texto_busqueda(titulo)
         autor = normalizar_texto_busqueda(autor)
 
         if not titulo:
-            return None
+            return []
 
         url = "https://openlibrary.org/search.json"
         consultas = []
 
         parametros_titulo = {
             "title": titulo,
-            "limit": 10,
+            "limit": 20,
+            "language": "spa",
         }
         if autor:
             parametros_titulo["author"] = autor
         consultas.append(parametros_titulo)
 
         if autor:
-            consultas.append({"q": f'"{titulo}" "{autor}"', "limit": 10})
-            consultas.append({"q": f"{titulo} {autor}", "limit": 10})
+            consultas.append({"q": f'"{titulo}" "{autor}"', "limit": 20, "language": "spa"})
+            consultas.append({"q": f"{titulo} {autor}", "limit": 20, "language": "spa"})
 
-        consultas.append({"q": f'"{titulo}"', "limit": 10})
-        consultas.append({"q": titulo, "limit": 10})
+        consultas.append({"q": f'"{titulo}"', "limit": 20, "language": "spa"})
+        consultas.append({"q": titulo, "limit": 20, "language": "spa"})
 
         for parametros in consultas:
             respuesta = requests.get(url, params=parametros, timeout=timeout)
@@ -925,34 +1065,54 @@ def buscar_en_open_library_por_texto(titulo, autor="", isbn_original="", timeout
             if not docs:
                 continue
 
-            info = docs[0]
+            for info in docs:
+                titulo_encontrado = info.get("title", "")
+                autores = info.get("author_name", [])
+                autores_texto = ", ".join(autores) if autores else ""
 
-            autores = info.get("author_name", [])
-            autores_texto = ", ".join(autores) if autores else (autor or "Autor desconocido")
+                if not titulo_encontrado:
+                    continue
 
-            editoriales = info.get("publisher", [])
-            editorial_texto = ", ".join(editoriales[:3]) if editoriales else "Editorial desconocida"
+                puntuacion = calcular_puntuacion_resultado_texto(
+                    titulo,
+                    autor,
+                    titulo_encontrado,
+                    autores_texto
+                )
 
-            portada = ""
-            if info.get("cover_i"):
-                portada = f"https://covers.openlibrary.org/b/id/{info['cover_i']}-L.jpg"
+                if puntuacion < 65:
+                    continue
 
-            return {
-                "fuente": "Open Library por título/autor",
-                "isbn": isbn_original,
-                "titulo": info.get("title", titulo),
-                "autores": autores_texto,
-                "editorial": editorial_texto,
-                "fecha_publicacion": str(info.get("first_publish_year", "Fecha desconocida")),
-                "categorias": ", ".join(info.get("subject", ["Sin categoría"])[:6]) if info.get("subject") else "Sin categoría",
-                "descripcion": "Sin descripción",
-                "portada": portada,
-            }
+                clave = f"openlibrary|{normalizar_texto_busqueda(titulo_encontrado).lower()}|{normalizar_texto_busqueda(autores_texto).lower()}"
+                if clave in candidatos_vistos:
+                    continue
+                candidatos_vistos.add(clave)
 
-        return None
+                libro = crear_libro_desde_open_library_doc(info, isbn_original)
+                isbnes = info.get("isbn", []) or []
+                candidatos.append({
+                    "libro": libro,
+                    "titulo": libro["titulo"],
+                    "autores": libro["autores"],
+                    "editorial": libro["editorial"],
+                    "fecha_publicacion": libro["fecha_publicacion"],
+                    "fuente": libro["fuente"],
+                    "isbn_original": isbn_original,
+                    "isbn_encontrado": ", ".join(isbnes[:3]) if isbnes else "",
+                    "puntuacion": puntuacion,
+                })
+
+        return sorted(candidatos, key=lambda candidato: candidato["puntuacion"], reverse=True)
 
     except Exception:
-        return None
+        return []
+
+
+def buscar_en_open_library_por_texto(titulo, autor="", isbn_original="", timeout=15):
+    candidatos = buscar_candidatos_open_library_por_texto(titulo, autor, isbn_original, timeout)
+    if candidatos:
+        return candidatos[0]["libro"]
+    return None
 
 
 def buscar_libro_por_titulo_autor(titulo, autor, isbn_original):
@@ -965,6 +1125,24 @@ def buscar_libro_por_titulo_autor(titulo, autor, isbn_original):
         return libro
 
     return None
+
+
+def buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original):
+    candidatos = []
+    candidatos.extend(buscar_candidatos_google_books_por_texto(titulo, autor, isbn_original, timeout=20))
+    candidatos.extend(buscar_candidatos_open_library_por_texto(titulo, autor, isbn_original, timeout=20))
+
+    candidatos_unicos = []
+    claves_vistas = set()
+
+    for candidato in sorted(candidatos, key=lambda item: item["puntuacion"], reverse=True):
+        clave = f"{normalizar_texto_busqueda(candidato['titulo']).lower()}|{normalizar_texto_busqueda(candidato['autores']).lower()}"
+        if clave in claves_vistas:
+            continue
+        claves_vistas.add(clave)
+        candidatos_unicos.append(candidato)
+
+    return candidatos_unicos[:5]
 
 
 def buscar_libro_por_isbn_rapido(isbn):
@@ -1622,16 +1800,16 @@ def mostrar_tab_añadir(biblioteca):
 
                     with col_buscar_texto:
                         if st.button("🔍 Buscar por título/autor", key=f"buscar_texto_{item_id}"):
-                            libro_por_texto = buscar_libro_por_titulo_autor(
+                            candidatos = buscar_candidatos_por_titulo_autor(
                                 titulo_busqueda,
                                 autor_busqueda,
                                 item["isbn"]
                             )
 
-                            if libro_por_texto:
-                                abrir_revision_libro(item, item_id, libro_por_texto)
-                            else:
-                                st.warning("No se ha encontrado ningún resultado claro por título/autor.")
+                            st.session_state[f"candidatos_texto_{item_id}"] = candidatos
+
+                            if not candidatos:
+                                st.warning("No se ha encontrado ningún resultado suficientemente parecido por título/autor.")
 
                     with col_manual:
                         if st.button("Crear ficha manual", key=f"manual_{item_id}"):
@@ -1641,6 +1819,25 @@ def mostrar_tab_añadir(biblioteca):
                         if st.button("Descartar", key=f"descartar_no_{item_id}"):
                             st.session_state["cola_isbn"] = [i for i in st.session_state["cola_isbn"] if i["id"] != item_id]
                             st.rerun()
+
+                    candidatos_guardados = st.session_state.get(f"candidatos_texto_{item_id}", [])
+                    if candidatos_guardados:
+                        st.markdown("**Resultados parecidos encontrados**")
+                        st.caption("Elige el resultado que corresponda al libro físico. Se conservará el ISBN escaneado.")
+
+                        for indice, candidato in enumerate(candidatos_guardados, start=1):
+                            with st.container(border=True):
+                                st.write(f"**{indice}. {candidato['titulo']}**")
+                                st.caption(
+                                    f"{candidato['autores']} · {candidato['editorial']} · {candidato['fecha_publicacion']} · "
+                                    f"Fuente: {candidato['fuente']} · Coincidencia: {candidato['puntuacion']}%"
+                                )
+                                if candidato.get("isbn_encontrado"):
+                                    st.caption(f"ISBN de la ficha encontrada: {candidato['isbn_encontrado']}")
+                                st.caption(f"ISBN físico que se guardará: {item['isbn']}")
+
+                                if st.button("Usar este resultado", key=f"usar_candidato_{item_id}_{indice}"):
+                                    abrir_revision_libro(item, item_id, candidato["libro"])
 
                 elif item["estado"] == "en_revision":
                     st.info(f"📚 En revisión · ISBN: {item['isbn']}")
