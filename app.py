@@ -1331,6 +1331,24 @@ def buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original):
     return candidatos_unicos[:5]
 
 
+# --- Candidatos con portada por título/autor ---
+def buscar_candidatos_portada_por_titulo_autor(titulo, autor, isbn_original):
+    candidatos = buscar_candidatos_por_titulo_autor(titulo, autor, isbn_original)
+    candidatos_con_portada = []
+    portadas_vistas = set()
+
+    for candidato in candidatos:
+        portada = candidato.get("libro", {}).get("portada", "") or ""
+
+        if not portada or portada in portadas_vistas:
+            continue
+
+        portadas_vistas.add(portada)
+        candidatos_con_portada.append(candidato)
+
+    return candidatos_con_portada[:5]
+
+
 def buscar_libro_por_isbn_rapido(isbn):
     isbn = limpiar_isbn(isbn)
 
@@ -1698,6 +1716,52 @@ def mostrar_ficha_revision(biblioteca):
         else:
             st.info("Sin portada disponible")
 
+            if libro.get("titulo"):
+                if st.button("🔍 Buscar portada en otras ediciones", key="buscar_portadas_otras_ediciones"):
+                    st.session_state["candidatos_portada"] = buscar_candidatos_portada_por_titulo_autor(
+                        libro.get("titulo", ""),
+                        libro.get("autores", ""),
+                        libro.get("isbn", "")
+                    )
+
+                candidatos_portada = st.session_state.get("candidatos_portada", [])
+
+                if "candidatos_portada" in st.session_state and not candidatos_portada:
+                    st.warning("No se han encontrado portadas alternativas suficientemente parecidas.")
+
+                if candidatos_portada:
+                    st.markdown("**Portadas encontradas**")
+                    st.caption("Elige una portada. Solo se rellenará la URL de portada; el ISBN físico no cambia.")
+
+                    for indice, candidato in enumerate(candidatos_portada, start=1):
+                        libro_candidato = candidato["libro"]
+                        portada_candidata = libro_candidato.get("portada", "")
+
+                        with st.container(border=True):
+                            if portada_candidata:
+                                st.image(portada_candidata, width=95)
+
+                            st.caption(
+                                f"{libro_candidato.get('titulo', 'Título desconocido')} · "
+                                f"{libro_candidato.get('autores', 'Autor desconocido')}"
+                            )
+                            st.caption(
+                                f"{libro_candidato.get('editorial', 'Editorial desconocida')} · "
+                                f"{libro_candidato.get('fecha_publicacion', 'Fecha desconocida')} · "
+                                f"Fuente: {libro_candidato.get('fuente', 'Fuente desconocida')}"
+                            )
+                            if candidato.get("isbn_encontrado"):
+                                st.caption(f"ISBN de la ficha encontrada: {candidato['isbn_encontrado']}")
+                            st.caption(f"ISBN físico que se conserva: {libro.get('isbn', '')}")
+
+                            if st.button("Usar esta portada", key=f"usar_portada_{indice}"):
+                                st.session_state["libro_encontrado"]["portada"] = portada_candidata
+                                if "nuevo_portada" in st.session_state:
+                                    del st.session_state["nuevo_portada"]
+                                if "candidatos_portada" in st.session_state:
+                                    del st.session_state["candidatos_portada"]
+                                st.rerun()
+
     with col2:
         titulo_editado = st.text_input("Título", value=libro["titulo"], key="nuevo_titulo")
         autores_editado = st.text_input("Autor/es", value=libro["autores"], key="nuevo_autores")
@@ -1755,6 +1819,10 @@ def mostrar_ficha_revision(biblioteca):
 
                     st.session_state["mensaje_guardado"] = f"Libro guardado correctamente: {libro_guardar['titulo'] or 'Sin título'}"
                     st.session_state["mostrar_aviso_libro_encontrado"] = False
+
+                    if "candidatos_portada" in st.session_state:
+                        del st.session_state["candidatos_portada"]
+
                     del st.session_state["libro_encontrado"]
                     st.rerun()
 
@@ -1772,6 +1840,9 @@ def mostrar_ficha_revision(biblioteca):
                                 item_cancelado["estado"] = "encontrado"
 
                     del st.session_state["item_cola_activo"]
+
+                if "candidatos_portada" in st.session_state:
+                    del st.session_state["candidatos_portada"]
 
                 del st.session_state["libro_encontrado"]
                 st.rerun()
